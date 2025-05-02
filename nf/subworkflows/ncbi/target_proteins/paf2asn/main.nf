@@ -22,7 +22,7 @@ workflow paf2asn {
 
 
 process run_paf2asn {
-    label 'long_job'
+    label 'big_job'
     input:
         path genome,  stageAs: 'LDS_Index/genome.asnt'
         path proteins,  stageAs: 'LDS_Index/proteins.asnt'
