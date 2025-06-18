@@ -1,5 +1,5 @@
-
-w.enable.dsl=2
+#!/usr/bin/env nextflow
+nextflow.enable.dsl=2
 
 include { merge_params } from '../../utilities'
 
