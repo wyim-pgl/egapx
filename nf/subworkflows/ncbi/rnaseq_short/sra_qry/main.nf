@@ -1,17 +1,14 @@
-#!/usr/bin/env nextflow
-nextflow.enable.dsl=2
+
+w.enable.dsl=2
 
 include { merge_params } from '../../utilities'
 
 sra_api_url = "https://trace.ncbi.nlm.nih.gov/Traces/sra-db-be/runinfo"
 
-
 workflow sra_query  {
     take:
-        // The SRA query should be present either in parameters map in sra_query section or in query
-        // The parameter 'query' overrides the one set in 'parameters'
-        query          // String : query
-        parameters     // Map : extra parameter and parameter update
+        query
+        parameters
     main:
         String params = merge_params("", parameters, "sra_query")
         if (query) {
@@ -24,7 +21,6 @@ workflow sra_query  {
         sra_run_list = run_sra_query.out.sra_run_list
 }
 
-
 process run_sra_query {
     input:
         val parameters
@@ -35,49 +31,57 @@ process run_sra_query {
     script:
     """
     #!/usr/bin/env python3
-    # sra_query.py - proxy compliant replacement for sra_query
 
     import csv
     import json
+    import math
+    import shlex
     from urllib.request import urlopen
     from urllib.parse import quote
-
-    import shlex
     from sys import exit
 
-    esearch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=sra&retmode=json&retmax=2147483647&idtype=gi&term="
+    esearch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=sra&retmode=json&retmax=10000&idtype=gi&term="
     runinfo_url = "https://trace.ncbi.nlm.nih.gov/Traces/sra-db-be/runinfo?retmode=csv&sp=runinfo&uid="
-    TAB=chr(9)
-    NL=chr(10)
+    TAB = chr(9)
+    NL = chr(10)
 
     parameters = shlex.split("$parameters")
     if len(parameters) < 2 and parameters[0] != "-query":
         exit(1)
 
-    query = parameters[1]
+    full_query = parameters[1]
+    terms = full_query.replace("OR", " ").replace("[Accession]", "").split()
 
-    esearch = urlopen(esearch_url+quote(query))
-    esearch_json = json.load(esearch)
-    uids = ','.join(esearch_json["esearchresult"]["idlist"])
+    def chunk_list(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
 
-    runinfo = urlopen(runinfo_url+uids)
+    all_ids = []
+    for chunk in chunk_list(terms, 100):
+        chunk_query = ' OR '.join([f"{x}[Accession]" for x in chunk])
+        url = esearch_url + quote(chunk_query)
+        with urlopen(url) as response:
+            esearch_json = json.load(response)
+            all_ids.extend(esearch_json["esearchresult"]["idlist"])
+
+    uids = ','.join(all_ids)
+    runinfo = urlopen(runinfo_url + uids)
     runinfo_csv = runinfo.read().decode("utf-8")
-    # print(runinfo_csv)
 
     lines = runinfo_csv.split(NL)
     header = lines[0]
-    keypos = {}
-    for i, k in enumerate(header.split(",")):
-        keypos[k] = i
+    keypos = {k: i for i, k in enumerate(header.split(","))}
+
     sra_meta_keys = ["SRA run accession", "SRA sample accession", "Run type", "SRA read count", "SRA base count", "Average insert size", "Insert size stdev",
-                    "Platform type", "Model", "SRA Experiment accession", "SRA Study accession", "Biosample accession", "Bioproject ID", "Bioproject Accession", "Scientific name", "TaxID", "Release date"]
+                     "Platform type", "Model", "SRA Experiment accession", "SRA Study accession", "Biosample accession", "Bioproject ID", "Bioproject Accession", "Scientific name", "TaxID", "Release date"]
+
     with open("sra_metadata.dat", 'wt') as outf:
         print(f"#{TAB.join(sra_meta_keys)}", file=outf)
         for line in lines[1:]:
             line = line.strip()
             if not line:
                 continue
-            for l in  csv.reader([line], quotechar='"', delimiter=',', quoting=csv.QUOTE_ALL, skipinitialspace=True):
+            for l in csv.reader([line], quotechar='"', delimiter=',', quoting=csv.QUOTE_ALL, skipinitialspace=True):
                 parts = l
             printable = []
             paired = False
@@ -103,6 +107,7 @@ process run_sra_query {
                 else:
                     printable.append(v)
             print(TAB.join(printable), file=outf)
+
     with open("sra_run_accessions.ids", 'wt') as outf:
         print("#SRA run accession", file=outf)
         for line in lines[1:]:
@@ -122,3 +127,4 @@ process run_sra_query {
     touch sra_run_accessions.ids
     """
 }
+
